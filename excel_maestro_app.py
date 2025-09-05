@@ -47,13 +47,28 @@ st.markdown("""
 
 # --- Helper Functions ---
 
-def dataframe_to_excel_bytes(df):
+def dataframe_to_styled_excel_bytes(df):
     """
-    Converts a pandas DataFrame into an in-memory Excel file (bytes).
+    Converts a pandas DataFrame into an in-memory, styled Excel file (bytes)
+    with auto-adjusted column widths.
     """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Sheet1')
+        worksheet = writer.sheets['Sheet1']
+        # Auto-fit columns
+        for column in worksheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            # Find the max length in the column
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = (max_length + 2)
+            worksheet.column_dimensions[column_letter].width = adjusted_width
     return output.getvalue()
 
 def auto_clean_dataframe(df):
@@ -198,7 +213,7 @@ def execute_ai_command(api_key, df, command, proxy_url=None):
             summary_parts.append(f"{len(cols_removed)} ستون حذف شد: ({', '.join(cols_removed)}).")
         
         if len(summary_parts) == 1:
-             summary_parts.append("هیچ تغییری در سطرها یا ستون‌ها ایجاد نشد.")
+             summary_parts.append("هیچ تغییری در سطرها یا ستون‌ها ایجاد نشد (فقط مقادیر داخلی تغییر کردند).")
 
         answer = " ".join(summary_parts)
         return intent, df_copy, explanation, answer
@@ -296,6 +311,7 @@ if st.session_state.history:
                         st.session_state.history = st.session_state.history[:st.session_state.current_index + 1]
                         st.session_state.history.append(result_data)
                         st.session_state.current_index += 1
+                        st.rerun() # Force an immediate rerun to update the UI
 
                 except Exception as e:
                     st.error(f"یک خطا رخ داد: {e}")
@@ -320,8 +336,8 @@ if st.session_state.history:
         st.session_state.current_index += 1
         st.session_state.last_result = None
         st.rerun()
-    cols[2].download_button("💾 دانلود اکسل ویرایش شده", dataframe_to_excel_bytes(current_df), "edited_data.xlsx", use_container_width=True)
-    cols[3].download_button("✨ دانلود اکسل پاکسازی شده", dataframe_to_excel_bytes(auto_clean_dataframe(current_df.copy())), "cleaned_data.xlsx", use_container_width=True)
+    cols[2].download_button("💾 دانلود اکسل ویرایش شده", dataframe_to_styled_excel_bytes(current_df), "edited_data.xlsx", use_container_width=True, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    cols[3].download_button("✨ دانلود اکسل پاکسازی شده", dataframe_to_styled_excel_bytes(auto_clean_dataframe(current_df.copy())), "cleaned_data.xlsx", use_container_width=True, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     st.header("۵. پیش‌نمایش داده")
     st.info(f"نمایش نسخه {st.session_state.current_index + 1} از {len(st.session_state.history)}. تعداد سطرها: {len(current_df)}")
