@@ -7,6 +7,7 @@ Ready for deployment on Streamlit Community Cloud.
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import io
 import re
 import google.generativeai as genai
@@ -85,6 +86,7 @@ def get_ai_response(api_key, df, command, proxy_url=None):
     
     prompt = f"""
         شما یک متخصص تحلیل داده با پایتون و کتابخانه pandas هستید. وظیفه شما این است که دستور زبان طبیعی کاربر را تحلیل کرده و یک پاسخ JSON تولید کنید.
+        کاربران ممکن است به اشتباه از کلمه "سطر" یا "ردیف" استفاده کنند در حالی که منظورشان "ستون" است. اگر دستور به محاسبه مقداری برای هر ردیف موجود اشاره دارد، فرض کنید منظور کاربر "ستون" بوده است.
 
         دیتافریم با نام `df_copy` در دسترس است. نام ستون‌ها: [{schema}]
         دستور کاربر: "{command}"
@@ -94,7 +96,7 @@ def get_ai_response(api_key, df, command, proxy_url=None):
         سپس یک پاسخ در قالب JSON ارائه دهید که شامل سه کلید باشد:
         1. "intent": نیت کاربر، که باید یکی از این دو مقدار باشد: "modification" یا "analysis".
         2. "code": یک قطعه کد پایتون (pandas) که دستور کاربر را اجرا می‌کند.
-           - اگر intent برابر "modification" است، کد باید دیتافریم `df_copy` را مستقیماً تغییر دهد (با `inplace=True` یا انتساب مجدد `df_copy = ...`).
+           - اگر intent برابر "modification" است، کد باید دیتافریم `df_copy` را مستقیماً تغییر دهد.
            - اگر intent برابر "analysis" است، کد باید نتیجه تحلیل را در متغیری به نام `result` ذخیره کند.
         3. "explanation": یک توضیح کوتاه و روان به زبان فارسی در مورد کاری که کد انجام می‌دهد.
 
@@ -124,6 +126,17 @@ def get_ai_response(api_key, df, command, proxy_url=None):
           "code": "df_copy['سود'] = df_copy['فروش'] - df_copy['هزینه']",
           "explanation": "ستون جدیدی به نام 'سود' ایجاد شد که نتیجه تفریق ستون 'هزینه' از 'فروش' است."
         }}
+
+        مثال 4 (افزودن ستون شرطی و کیفی):
+        دستور کاربر: "یک ستون وضعیت نمره بساز که اگر میانگین نمره بالای 15 بود بنویس عالی، بین 10 تا 15 بنویس خوب و زیر 10 بنویس نیاز به تلاش"
+        پاسخ JSON:
+        {{
+          "intent": "modification",
+          "code": "conditions = [df_copy['میانگین نمره'] >= 15, (df_copy['میانگین نمره'] >= 10) & (df_copy['میانگین نمره'] < 15), df_copy['میانگین نمره'] < 10]; choices = ['عالی', 'خوب', 'نیاز به تلاش']; df_copy['وضعیت نمره'] = np.select(conditions, choices, default='نامشخص')",
+          "explanation": "یک ستون جدید به نام 'وضعیت نمره' بر اساس مقدار 'میانگین نمره' با برچسب‌های کیفی ایجاد شد."
+        }}
+        
+        نکته: برای مثال 4، حتماً `import numpy as np` را در کد خود لحاظ کن.
         
         اکنون، برای دستور کاربر بالا، پاسخ JSON را تولید کنید.
         """
@@ -149,7 +162,9 @@ def execute_ai_command(api_key, df, command, proxy_url=None):
     Gets the AI-generated code, determines intent, and executes it safely.
     """
     original_rows = len(df)
+    original_cols = set(df.columns)
     df_copy = df.copy()
+    
     ai_response = get_ai_response(api_key, df, command, proxy_url)
     intent = ai_response.get("intent")
     generated_code = ai_response.get("code")
@@ -158,7 +173,7 @@ def execute_ai_command(api_key, df, command, proxy_url=None):
     if not generated_code or not intent:
         raise ValueError("هوش مصنوعی پاسخ معتبری تولید نکرد.")
 
-    local_vars = {'df_copy': df_copy, 'pd': pd, 'result': None}
+    local_vars = {'df_copy': df_copy, 'pd': pd, 'np': np, 'result': None}
     try:
         exec(generated_code, globals(), local_vars)
     except Exception as e:
@@ -166,8 +181,26 @@ def execute_ai_command(api_key, df, command, proxy_url=None):
 
     if intent == "modification":
         df_copy = local_vars['df_copy']
-        rows_affected = original_rows - len(df_copy)
-        answer = f"عملیات با موفقیت انجام شد. {abs(rows_affected)} سطر تغییر کرد. مجموعه داده اکنون {len(df_copy)} سطر دارد."
+        
+        # Create a detailed and accurate summary message of the changes
+        final_rows = len(df_copy)
+        final_cols = set(df_copy.columns)
+        row_change = final_rows - original_rows
+        cols_added = final_cols - original_cols
+        cols_removed = original_cols - final_cols
+
+        summary_parts = ["عملیات با موفقیت انجام شد."]
+        if row_change != 0:
+            summary_parts.append(f"{abs(row_change)} سطر تغییر کرد.")
+        if cols_added:
+            summary_parts.append(f"{len(cols_added)} ستون جدید اضافه شد: ({', '.join(cols_added)}).")
+        if cols_removed:
+            summary_parts.append(f"{len(cols_removed)} ستون حذف شد: ({', '.join(cols_removed)}).")
+        
+        if len(summary_parts) == 1:
+             summary_parts.append("هیچ تغییری در سطرها یا ستون‌ها ایجاد نشد.")
+
+        answer = " ".join(summary_parts)
         return intent, df_copy, explanation, answer
     
     elif intent == "analysis":
@@ -197,7 +230,6 @@ st.write("فایل اکسل خود را آپلود کنید و با زبان ط�
 with st.sidebar:
     st.header("۱. تنظیمات")
 
-    # Securely get API key for deployed app, with fallback for local use
     try:
         api_key = st.secrets.get("GOOGLE_API_KEY")
         if not api_key:
@@ -207,7 +239,6 @@ with st.sidebar:
     except Exception:
         api_key = st.text_input("🔑 کلید Google AI API", type="password", help="کلید API خود را اینجا وارد کنید.")
 
-    # Securely get Proxy for deployed app, with fallback for local use
     try:
         proxy_url = st.secrets.get("PROXY_URL")
         if not proxy_url:
@@ -226,7 +257,7 @@ with st.sidebar:
             df = pd.read_excel(uploaded_file)
             st.session_state.history = [df.copy()]
             st.session_state.current_index = 0
-            st.session_state.last_result = None # Clear previous results
+            st.session_state.last_result = None
             st.sidebar.success("فایل با موفقیت بارگذاری شد!")
         except Exception as e:
             st.sidebar.error(f"خطا در بارگذاری فایل: {e}")
@@ -234,7 +265,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("نمونه دستورات")
-    st.info("""**برای ویرایش:**\n- `فقط کشور ایران رو نشون بده`\n- `یک ستون جدید 'مالیات' بساز که ۱۰٪ فروش باشه`\n\n**برای تحلیل:**\n- `میانگین فروش چقدره؟`\n- `گران‌ترین محصول کدام است؟`""")
+    st.info("""**برای ویرایش:**\n- `یک ستون جدید 'مالیات' بساز که ۱۰٪ فروش باشه`\n- `یک ستون وضعیت بساز که اگر نمره بالای 15 بود بنویس عالی`\n\n**برای تحلیل:**\n- `میانگین فروش چقدره؟`\n- `گران‌ترین محصول کدام است؟`""")
 
 # --- Main Application Logic ---
 if st.session_state.history:
@@ -244,7 +275,7 @@ if st.session_state.history:
     prompt = st.text_area("دستور خود را اینجا وارد کنید:", placeholder="مثلاً: میانگین ستون 'فروش' چقدر است؟", height=100)
 
     if st.button("🚀 اجرای دستور"):
-        st.session_state.last_result = None # Clear old results on new command
+        st.session_state.last_result = None
         if not api_key:
             st.error("لطفاً کلید Google AI API خود را در نوار کناری وارد کنید یا در Secrets تنظیم نمایید.")
         elif not prompt:
@@ -254,7 +285,6 @@ if st.session_state.history:
                 try:
                     intent, result_data, explanation, summary_message = execute_ai_command(api_key, current_df, prompt, proxy_url)
                     
-                    # Store result in session state to display after rerun
                     st.session_state.last_result = {
                         "intent": intent, 
                         "explanation": explanation, 
@@ -266,12 +296,10 @@ if st.session_state.history:
                         st.session_state.history = st.session_state.history[:st.session_state.current_index + 1]
                         st.session_state.history.append(result_data)
                         st.session_state.current_index += 1
-                        # No st.rerun() here, Streamlit will handle it because session_state changed.
 
                 except Exception as e:
                     st.error(f"یک خطا رخ داد: {e}")
 
-    # Display the result from the last command, if it exists
     if st.session_state.get('last_result'):
         res = st.session_state.last_result
         with st.container(border=True):
