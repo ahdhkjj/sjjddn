@@ -20,6 +20,30 @@ st.set_page_config(
     page_icon="🤖",
 )
 
+# --- RTL CSS Styling ---
+st.markdown("""
+<style>
+    /* General RTL for the whole app */
+    body {
+        direction: rtl;
+    }
+    /* Specifically target Streamlit's dataframe component */
+    .stDataFrame {
+        direction: rtl;
+        text-align: right;
+    }
+    /* Header cells */
+    .stDataFrame div[role="columnheader"] {
+        text-align: right !important;
+    }
+    /* Data cells */
+    .stDataFrame div[data-testid="stMarkdownContainer"] {
+        text-align: right !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
 # --- Helper Functions ---
 
 def dataframe_to_excel_bytes(df):
@@ -65,14 +89,41 @@ def get_ai_response(api_key, df, command, proxy_url=None):
         دیتافریم با نام `df_copy` در دسترس است. نام ستون‌ها: [{schema}]
         دستور کاربر: "{command}"
 
-        ابتدا نیت کاربر را تشخیص دهید: آیا او قصد تغییر و ویرایش دیتافریم را دارد (modification) یا قصد پرسیدن سوال و تحلیل داده را دارد (analysis)؟
+        ابتدا نیت کاربر را تشخیص دهید: آیا او قصد تغییر، ویرایش یا افزودن به دیتافریم را دارد (modification) یا قصد پرسیدن سوال و تحلیل داده را دارد (analysis)؟
 
         سپس یک پاسخ در قالب JSON ارائه دهید که شامل سه کلید باشد:
         1. "intent": نیت کاربر، که باید یکی از این دو مقدار باشد: "modification" یا "analysis".
         2. "code": یک قطعه کد پایتون (pandas) که دستور کاربر را اجرا می‌کند.
-           - اگر intent برابر "modification" است، کد باید دیتافریم `df_copy` را مستقیماً تغییر دهد (با `inplace=True` یا `df_copy = ...`).
+           - اگر intent برابر "modification" است، کد باید دیتافریم `df_copy` را مستقیماً تغییر دهد (با `inplace=True` یا انتساب مجدد `df_copy = ...`).
            - اگر intent برابر "analysis" است، کد باید نتیجه تحلیل را در متغیری به نام `result` ذخیره کند.
         3. "explanation": یک توضیح کوتاه و روان به زبان فارسی در مورد کاری که کد انجام می‌دهد.
+
+        مثال 1 (ویرایش):
+        دستور کاربر: "سطرهای تکراری را حذف کن"
+        پاسخ JSON:
+        {{
+          "intent": "modification",
+          "code": "df_copy.drop_duplicates(inplace=True)",
+          "explanation": "سطرهای تکراری از مجموعه داده حذف شدند."
+        }}
+
+        مثال 2 (تحلیل):
+        دستور کاربر: "میانگین فروش چقدر است؟"
+        پاسخ JSON:
+        {{
+          "intent": "analysis",
+          "code": "result = df_copy['فروش'].mean()",
+          "explanation": "میانگین مقادیر در ستون 'فروش' محاسبه شد."
+        }}
+        
+        مثال 3 (افزودن ستون):
+        دستور کاربر: "یک ستون جدید به نام سود بساز که حاصل فروش منهای هزینه باشد"
+        پاسخ JSON:
+        {{
+          "intent": "modification",
+          "code": "df_copy['سود'] = df_copy['فروش'] - df_copy['هزینه']",
+          "explanation": "ستون جدیدی به نام 'سود' ایجاد شد که نتیجه تفریق ستون 'هزینه' از 'فروش' است."
+        }}
         
         اکنون، برای دستور کاربر بالا، پاسخ JSON را تولید کنید.
         """
@@ -135,6 +186,8 @@ if 'history' not in st.session_state:
     st.session_state.history = []
 if 'current_index' not in st.session_state:
     st.session_state.current_index = -1
+if 'last_result' not in st.session_state:
+    st.session_state.last_result = None
 
 # --- UI Layout ---
 st.title("🧙‍♂️ استاد داده اکسل (نسخه هوشمند 🤖)")
@@ -173,6 +226,7 @@ with st.sidebar:
             df = pd.read_excel(uploaded_file)
             st.session_state.history = [df.copy()]
             st.session_state.current_index = 0
+            st.session_state.last_result = None # Clear previous results
             st.sidebar.success("فایل با موفقیت بارگذاری شد!")
         except Exception as e:
             st.sidebar.error(f"خطا در بارگذاری فایل: {e}")
@@ -180,7 +234,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("نمونه دستورات")
-    st.info("""**برای ویرایش:**\n- `فقط کشور ایران رو نشون بده`\n- `سطرهای خالی رو حذف کن`\n\n**برای تحلیل:**\n- `میانگین فروش چقدره؟`\n- `گران‌ترین محصول کدام است؟`""")
+    st.info("""**برای ویرایش:**\n- `فقط کشور ایران رو نشون بده`\n- `یک ستون جدید 'مالیات' بساز که ۱۰٪ فروش باشه`\n\n**برای تحلیل:**\n- `میانگین فروش چقدره؟`\n- `گران‌ترین محصول کدام است؟`""")
 
 # --- Main Application Logic ---
 if st.session_state.history:
@@ -190,6 +244,7 @@ if st.session_state.history:
     prompt = st.text_area("دستور خود را اینجا وارد کنید:", placeholder="مثلاً: میانگین ستون 'فروش' چقدر است؟", height=100)
 
     if st.button("🚀 اجرای دستور"):
+        st.session_state.last_result = None # Clear old results on new command
         if not api_key:
             st.error("لطفاً کلید Google AI API خود را در نوار کناری وارد کنید یا در Secrets تنظیم نمایید.")
         elif not prompt:
@@ -198,27 +253,44 @@ if st.session_state.history:
             with st.spinner("در حال ارتباط با هوش مصنوعی و پردازش دستور شما..."):
                 try:
                     intent, result_data, explanation, summary_message = execute_ai_command(api_key, current_df, prompt, proxy_url)
-                    with st.container(border=True):
-                        st.markdown(f"**💡 توضیح هوش مصنوعی:** {explanation}")
-                        if intent == "modification":
-                            st.markdown(f"**📈 نتیجه:** {summary_message}")
-                            st.session_state.history = st.session_state.history[:st.session_state.current_index + 1]
-                            st.session_state.history.append(result_data)
-                            st.session_state.current_index += 1
-                            st.rerun()
-                        elif intent == "analysis":
-                            st.markdown(f"**📊 پاسخ تحلیل:**")
-                            st.code(result_data, language=None)
+                    
+                    # Store result in session state to display after rerun
+                    st.session_state.last_result = {
+                        "intent": intent, 
+                        "explanation": explanation, 
+                        "summary": summary_message, 
+                        "data": result_data
+                    }
+
+                    if intent == "modification":
+                        st.session_state.history = st.session_state.history[:st.session_state.current_index + 1]
+                        st.session_state.history.append(result_data)
+                        st.session_state.current_index += 1
+                        # No st.rerun() here, Streamlit will handle it because session_state changed.
+
                 except Exception as e:
                     st.error(f"یک خطا رخ داد: {e}")
+
+    # Display the result from the last command, if it exists
+    if st.session_state.get('last_result'):
+        res = st.session_state.last_result
+        with st.container(border=True):
+            st.markdown(f"**💡 توضیح هوش مصنوعی:** {res['explanation']}")
+            if res['intent'] == "modification":
+                st.markdown(f"**📈 نتیجه:** {res['summary']}")
+            elif res['intent'] == "analysis":
+                st.markdown(f"**📊 پاسخ تحلیل:**")
+                st.code(res['data'], language=None)
 
     st.header("۴. کنترل‌ها و دانلود")
     cols = st.columns([1.5, 2, 2.5, 2.5])
     if cols[0].button("↩️ بازگشت", use_container_width=True, disabled=(st.session_state.current_index <= 0)):
         st.session_state.current_index -= 1
+        st.session_state.last_result = None
         st.rerun()
     if cols[1].button("↪️ جلو بردن", use_container_width=True, disabled=(st.session_state.current_index >= len(st.session_state.history) - 1)):
         st.session_state.current_index += 1
+        st.session_state.last_result = None
         st.rerun()
     cols[2].download_button("💾 دانلود اکسل ویرایش شده", dataframe_to_excel_bytes(current_df), "edited_data.xlsx", use_container_width=True)
     cols[3].download_button("✨ دانلود اکسل پاکسازی شده", dataframe_to_excel_bytes(auto_clean_dataframe(current_df.copy())), "cleaned_data.xlsx", use_container_width=True)
